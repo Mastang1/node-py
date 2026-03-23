@@ -527,7 +527,7 @@
 - **画布居中 Bug**：NodeGraphQt 的 `fit_to_selection()` → `zoom_to_nodes()` 会改写全局 `_scene_range` 并 `setSceneRect`，导致主窗口/场景被异常缩放。应用层改为仅对选中（或全部）节点做 **`fitInView`**，**不**修改场景矩形。
 
 #### 18.2 产品经理视角的补充 backlog（后续迭代）
-- **持久化布局**：`QSettings` 保存主/纵向 splitter 尺寸与右侧当前 Tab，启动恢复。
+- ~~**持久化布局**~~：已落地（`MainLayoutSettingsStore`，见 §18.3 / §19）。
 - **右栏可选停靠**：评估 `QDockWidget` 或侧边可折叠面板，进一步释放画布面积。
 - **遥测与可观测性**：流程运行耗时、校验失败原因聚合（仅诊断，注意隐私）。
 - **代码节点安全**：`PythonSnippetNode` 生产策略——子进程沙箱、超时、白名单模块；与导出/调试共用执行策略说明写入帮助。
@@ -536,6 +536,21 @@
 
 #### 18.3 技术备注
 - 视口框选实现：`demo_02/app_window.py` 中 `_frame_nodes_in_viewport()`，内部使用 `viewer._combined_rect()`（与库内 `zoom_to_nodes` 同源几何计算），但**只调用** `fitInView(..., KeepAspectRatio)`。
-- 版本号文件：仓库根目录 `VERSION`（当前 `0.1.0`）。
+- 版本号文件：仓库根目录 `VERSION`。
 - **Git 与本仓库**：`design_tcs` 根目录为 Git 工作区；`NodeGraphQt` 为独立上游仓库（内含 `.git`），默认写入 `.gitignore`，避免嵌套仓库导致克隆丢失文件。本地运行请在 `design_tcs/NodeGraphQt/` 单独克隆或放置 NodeGraphQt 源码（与 `demo_02/common.py` 中 `WORKSPACE_ROOT / "NodeGraphQt"` 一致）。
-- **布局记忆**：主窗口横向/纵向 `QSplitter` 状态及右侧 Tab、日志 Tab 当前页通过 `QSettings`（IniFormat，组织名 `Mastang`，应用名 `Demo02NodeFlow`）在关闭时保存，首次 `showEvent` 恢复。
+- **布局记忆**：主窗口横向/纵向 `QSplitter` 状态及右侧 Tab、日志 Tab 当前页通过 `QSettings`（IniFormat，组织名 `Mastang`，应用名 `Demo02NodeFlow`）在关闭时保存，首次 `showEvent` 恢复；实现位于 `demo_02/platform/settings_store.py` 的 `MainLayoutSettingsStore`。
+- 版本号以仓库根目录 **`VERSION`** 文件为准（不再在本文重复具体号）。
+
+### 19. 分层架构落地（2026-03，Architect）
+
+#### 19.1 文档
+- **`demo_02/docs/ARCHITECTURE.md`**：分层图、模块映射、扩展点、不变量（跨线程、视口、流程语义），作为与 `app_window` 解耦的单一事实来源。
+
+#### 19.2 代码边界
+- **Composition**：`demo_02/graph_factory.py` — `build_configured_node_graph()` 集中完成节点注册、管道/布局策略、连线校验回调注入。
+- **Application**：`demo_02/application/flow_document.py` — `FlowDocument` 承载磁盘路径与基于 `undo_stack` 的脏标记；`Demo02Window.current_flow_path` 属性代理到该对象。
+- **Platform**：`demo_02/platform/settings_store.py` — 布局类持久化，与业务规则隔离。
+- **Presentation**：`app_window.py` 仍协调运行/调试与 UI，后续可按 `ARCHITECTURE.md` 将运行编排拆为独立协调器。
+
+#### 19.3 演进建议（下一跳）
+- 主题/语言写入同一 `platform` 存储；`RunCoordinator` / `DebugCoordinator` 封装子进程与 `QThread` 生命周期，MainWindow 只订阅信号。

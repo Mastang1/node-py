@@ -6,7 +6,6 @@ from pathlib import Path
 from typing import Any
 
 from Qt import QtCore, QtGui, QtWidgets
-from NodeGraphQt import NodeGraph
 from NodeGraphQt.constants import LayoutDirectionEnum, PortTypeEnum
 
 from .common import (
@@ -25,12 +24,14 @@ from .common import (
     ensure_parent_directory,
     pretty_json,
 )
+from .application.flow_document import FlowDocument
+from .graph_factory import build_configured_node_graph
 from .node_registry import (
     api_node_template_count,
     configure_graph_port_constraints,
     ensure_instrument_api_registered,
-    register_all_nodes,
 )
+from .platform.settings_store import MainLayoutSettingsStore
 from .nodes import (
     BooleanConstantNode,
     BooleanLogicNode,
@@ -248,7 +249,7 @@ TEXTS = {
 
 
 class Demo02Window(QtWidgets.QMainWindow):
-    """跨线程调试执行时，日志与节点状态经 Signal 回到主线程，避免直接触碰 Qt 控件。"""
+    """主界面：Presentation 层。图配置见 graph_factory；文档路径/脏标记见 FlowDocument；布局持久化见 platform。"""
 
     debug_log_requested = QtCore.Signal(str, str)
     debug_node_state_requested = QtCore.Signal(str, str, dict)
@@ -257,7 +258,6 @@ class Demo02Window(QtWidgets.QMainWindow):
         super().__init__()
         self.current_language = LANG_ZH
         self.current_theme = THEME_DARK
-        self.current_flow_path: Path | None = None
         self.current_selected_node: WorkflowNode | None = None
         self.node_runtime_states: dict[str, dict[str, Any]] = {}
         self.node_visual_defaults: dict[str, dict[str, Any]] = {}
@@ -272,14 +272,12 @@ class Demo02Window(QtWidgets.QMainWindow):
         self._main_v_splitter: QtWidgets.QSplitter | None = None
         self._layout_restored: bool = False
 
-        self.graph = NodeGraph()
-        register_all_nodes(self.graph)
-        self.graph.set_acyclic(False)
-        self.graph.set_pipe_collision(True)
-        self.graph.set_pipe_slicing(True)
-        self.graph.set_layout_direction(LayoutDirectionEnum.HORIZONTAL.value)
-        self.graph.viewer().connection_validator = self._viewer_connection_validation
-        self.graph.viewer().connection_feedback_callback = self._viewer_connection_feedback
+        self.graph = build_configured_node_graph(
+            self._viewer_connection_validation,
+            self._viewer_connection_feedback,
+        )
+        self._document = FlowDocument(self.graph)
+        self._layout_store = MainLayoutSettingsStore()
 
         self._build_widgets()
         self._build_actions()
@@ -291,6 +289,14 @@ class Demo02Window(QtWidgets.QMainWindow):
         self.retranslate_ui()
         self.apply_theme(THEME_DARK)
         self.build_sample_flow(prompt_if_dirty=False)
+
+    @property
+    def current_flow_path(self) -> Path | None:
+        return self._document.path
+
+    @current_flow_path.setter
+    def current_flow_path(self, value: Path | None) -> None:
+        self._document.path = value
 
     def t(self, key: str) -> str:
         return TEXTS[key][self.current_language]
@@ -768,10 +774,10 @@ class Demo02Window(QtWidgets.QMainWindow):
         return self.t("new_flow")
 
     def _is_flow_dirty(self) -> bool:
-        return not self.graph.undo_stack().isClean()
+        return self._document.is_dirty()
 
     def _mark_flow_clean(self) -> None:
-        self.graph.undo_stack().setClean()
+        self._document.mark_clean()
         self._update_window_title()
 
     def _update_window_title(self) -> None:
@@ -2227,52 +2233,21 @@ class Demo02Window(QtWidgets.QMainWindow):
             return
         self.log("run", self.t("runtime_not_supported"))
 
-    def _layout_settings(self) -> QtCore.QSettings:
-        return QtCore.QSettings(
-            QtCore.QSettings.IniFormat,
-            QtCore.QSettings.UserScope,
-            "Mastang",
-            "Demo02NodeFlow",
+    def _restore_main_layout_from_settings(self) -> None:
+        self._layout_store.restore(
+            self._main_h_splitter,
+            self._main_v_splitter,
+            self.right_panel,
+            self.log_tabs,
         )
 
-    def _restore_main_layout_from_settings(self) -> None:
-        if self._main_h_splitter is None or self._main_v_splitter is None:
-            return
-        s = self._layout_settings()
-
-        def _as_qbytearray(state: Any) -> QtCore.QByteArray | None:
-            if state is None:
-                return None
-            if isinstance(state, QtCore.QByteArray):
-                return state if not state.isEmpty() else None
-            if isinstance(state, (bytes, bytearray, memoryview)):
-                return QtCore.QByteArray(bytes(state))
-            return None
-
-        h_state = _as_qbytearray(s.value("layout/h_split"))
-        if h_state is not None:
-            self._main_h_splitter.restoreState(h_state)
-        v_state = _as_qbytearray(s.value("layout/v_split"))
-        if v_state is not None:
-            self._main_v_splitter.restoreState(v_state)
-        try:
-            self.right_panel.setCurrentIndex(int(s.value("layout/right_tab", 0)))
-        except (TypeError, ValueError):
-            pass
-        try:
-            self.log_tabs.setCurrentIndex(int(s.value("layout/log_tab", 0)))
-        except (TypeError, ValueError):
-            pass
-
     def _save_main_layout_to_settings(self) -> None:
-        if self._main_h_splitter is None or self._main_v_splitter is None:
-            return
-        s = self._layout_settings()
-        s.setValue("layout/h_split", self._main_h_splitter.saveState())
-        s.setValue("layout/v_split", self._main_v_splitter.saveState())
-        s.setValue("layout/right_tab", self.right_panel.currentIndex())
-        s.setValue("layout/log_tab", self.log_tabs.currentIndex())
-        s.sync()
+        self._layout_store.save(
+            self._main_h_splitter,
+            self._main_v_splitter,
+            self.right_panel,
+            self.log_tabs,
+        )
 
     def showEvent(self, event: QtGui.QShowEvent) -> None:  # type: ignore[override]
         super().showEvent(event)
