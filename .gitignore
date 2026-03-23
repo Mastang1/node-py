@@ -27,3 +27,9 @@ Thumbs.db
 
 # Cursor (local)
 .cursor/
+
+# NodeGraphQt is a separate upstream repo (nested .git). Clone into ./NodeGraphQt/ beside this tree to run demo_02.
+NodeGraphQt/
+
+# Ephemeral flow JSON from dev runs
+NodeGraphQt_notes/demo_02/generated/tmp*.json
