@@ -7,6 +7,7 @@ from Qt import QtCore, QtWidgets
 
 def show_help_browser(parent: QtWidgets.QWidget, title: str, html: str) -> None:
     dialog = QtWidgets.QDialog(parent)
+    dialog.setAttribute(QtCore.Qt.WA_DeleteOnClose)
     dialog.setWindowTitle(title)
     dialog.setWindowModality(QtCore.Qt.ApplicationModal)
     dialog.resize(620, 480)

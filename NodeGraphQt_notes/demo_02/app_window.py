@@ -268,6 +268,9 @@ class Demo02Window(QtWidgets.QMainWindow):
         self._debug_paused_node_id: str | None = None
         self._run_controller: FlowRunController | None = None
         self._run_temp_json: Path | None = None
+        self._main_h_splitter: QtWidgets.QSplitter | None = None
+        self._main_v_splitter: QtWidgets.QSplitter | None = None
+        self._layout_restored: bool = False
 
         self.graph = NodeGraph()
         register_all_nodes(self.graph)
@@ -522,30 +525,30 @@ class Demo02Window(QtWidgets.QMainWindow):
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(self.resource_tree)
 
-        horizontal_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
-        horizontal_splitter.addWidget(left_container)
-        horizontal_splitter.addWidget(self.graph.widget)
-        horizontal_splitter.addWidget(self.right_panel)
-        horizontal_splitter.setSizes([280, 920, 360])
-        horizontal_splitter.setStretchFactor(0, 0)
-        horizontal_splitter.setStretchFactor(1, 1)
-        horizontal_splitter.setStretchFactor(2, 0)
+        self._main_h_splitter = QtWidgets.QSplitter(QtCore.Qt.Horizontal)
+        self._main_h_splitter.addWidget(left_container)
+        self._main_h_splitter.addWidget(self.graph.widget)
+        self._main_h_splitter.addWidget(self.right_panel)
+        self._main_h_splitter.setSizes([280, 920, 360])
+        self._main_h_splitter.setStretchFactor(0, 0)
+        self._main_h_splitter.setStretchFactor(1, 1)
+        self._main_h_splitter.setStretchFactor(2, 0)
         for _i in range(3):
-            horizontal_splitter.setCollapsible(_i, False)
+            self._main_h_splitter.setCollapsible(_i, False)
 
-        vertical_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
-        vertical_splitter.addWidget(horizontal_splitter)
-        vertical_splitter.addWidget(self.log_tabs)
-        vertical_splitter.setSizes([760, 220])
-        vertical_splitter.setStretchFactor(0, 1)
-        vertical_splitter.setStretchFactor(1, 0)
+        self._main_v_splitter = QtWidgets.QSplitter(QtCore.Qt.Vertical)
+        self._main_v_splitter.addWidget(self._main_h_splitter)
+        self._main_v_splitter.addWidget(self.log_tabs)
+        self._main_v_splitter.setSizes([760, 220])
+        self._main_v_splitter.setStretchFactor(0, 1)
+        self._main_v_splitter.setStretchFactor(1, 0)
         for _j in range(2):
-            vertical_splitter.setCollapsible(_j, False)
+            self._main_v_splitter.setCollapsible(_j, False)
 
         central = QtWidgets.QWidget()
         layout = QtWidgets.QVBoxLayout(central)
         layout.setContentsMargins(6, 6, 6, 6)
-        layout.addWidget(vertical_splitter)
+        layout.addWidget(self._main_v_splitter)
         self.setCentralWidget(central)
 
     def _register_context_menus(self) -> None:
@@ -2224,10 +2227,64 @@ class Demo02Window(QtWidgets.QMainWindow):
             return
         self.log("run", self.t("runtime_not_supported"))
 
+    def _layout_settings(self) -> QtCore.QSettings:
+        return QtCore.QSettings(
+            QtCore.QSettings.IniFormat,
+            QtCore.QSettings.UserScope,
+            "Mastang",
+            "Demo02NodeFlow",
+        )
+
+    def _restore_main_layout_from_settings(self) -> None:
+        if self._main_h_splitter is None or self._main_v_splitter is None:
+            return
+        s = self._layout_settings()
+
+        def _as_qbytearray(state: Any) -> QtCore.QByteArray | None:
+            if state is None:
+                return None
+            if isinstance(state, QtCore.QByteArray):
+                return state if not state.isEmpty() else None
+            if isinstance(state, (bytes, bytearray, memoryview)):
+                return QtCore.QByteArray(bytes(state))
+            return None
+
+        h_state = _as_qbytearray(s.value("layout/h_split"))
+        if h_state is not None:
+            self._main_h_splitter.restoreState(h_state)
+        v_state = _as_qbytearray(s.value("layout/v_split"))
+        if v_state is not None:
+            self._main_v_splitter.restoreState(v_state)
+        try:
+            self.right_panel.setCurrentIndex(int(s.value("layout/right_tab", 0)))
+        except (TypeError, ValueError):
+            pass
+        try:
+            self.log_tabs.setCurrentIndex(int(s.value("layout/log_tab", 0)))
+        except (TypeError, ValueError):
+            pass
+
+    def _save_main_layout_to_settings(self) -> None:
+        if self._main_h_splitter is None or self._main_v_splitter is None:
+            return
+        s = self._layout_settings()
+        s.setValue("layout/h_split", self._main_h_splitter.saveState())
+        s.setValue("layout/v_split", self._main_v_splitter.saveState())
+        s.setValue("layout/right_tab", self.right_panel.currentIndex())
+        s.setValue("layout/log_tab", self.log_tabs.currentIndex())
+        s.sync()
+
+    def showEvent(self, event: QtGui.QShowEvent) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        if not self._layout_restored:
+            self._restore_main_layout_from_settings()
+            self._layout_restored = True
+
     def closeEvent(self, event: QtGui.QCloseEvent) -> None:  # type: ignore[override]
         if self._run_controller is not None and self._run_controller.is_running():
             self._run_controller.stop()
         if self._confirm_can_abandon_current_flow():
+            self._save_main_layout_to_settings()
             event.accept()
             return
         event.ignore()

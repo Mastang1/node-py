@@ -538,3 +538,4 @@
 - 视口框选实现：`demo_02/app_window.py` 中 `_frame_nodes_in_viewport()`，内部使用 `viewer._combined_rect()`（与库内 `zoom_to_nodes` 同源几何计算），但**只调用** `fitInView(..., KeepAspectRatio)`。
 - 版本号文件：仓库根目录 `VERSION`（当前 `0.1.0`）。
 - **Git 与本仓库**：`design_tcs` 根目录为 Git 工作区；`NodeGraphQt` 为独立上游仓库（内含 `.git`），默认写入 `.gitignore`，避免嵌套仓库导致克隆丢失文件。本地运行请在 `design_tcs/NodeGraphQt/` 单独克隆或放置 NodeGraphQt 源码（与 `demo_02/common.py` 中 `WORKSPACE_ROOT / "NodeGraphQt"` 一致）。
+- **布局记忆**：主窗口横向/纵向 `QSplitter` 状态及右侧 Tab、日志 Tab 当前页通过 `QSettings`（IniFormat，组织名 `Mastang`，应用名 `Demo02NodeFlow`）在关闭时保存，首次 `showEvent` 恢复。
