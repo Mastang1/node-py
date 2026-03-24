@@ -554,3 +554,18 @@
 
 #### 19.3 演进建议（下一跳）
 - 主题/语言写入同一 `platform` 存储；`RunCoordinator` / `DebugCoordinator` 封装子进程与 `QThread` 生命周期，MainWindow 只订阅信号。
+
+### 20. 校验顺序与导出、资源树（2026-03 修正）
+
+#### 20.1 流程校验 / 导出「新流程不可用」根因
+- `analyze_flow_graph` 曾将 `ordered_nodes` 设为**按画布坐标排序的可达节点**，而会话绑定校验按该列表顺序模拟 open → use → close。若用户在画布上把「关闭会话」放在「打开」上方，会得到**误报**（如「引用了未打开的会话」），从而阻断校验、导出与预览。
+- **修复**：`ordered_nodes` 改为从 **Start** 出发的 **DFS 栈遍历发现顺序**（与运行时探索顺序一致）；`reachable_nodes` 仍为稳定坐标排序，供导出与日志列举。
+
+#### 20.2 导出源码拼接
+- `WorkflowExporter.render_code` 不再丢弃列表中的空字符串行，避免意外合并语句行（保持生成脚本结构与可读性）。
+
+#### 20.3 仪器 API 与左侧资源树
+- 动态仪器节点元数据来自 `discover_api_method_metas()` 扫描 `demo_02.Instruments_pythonic`（含 `generated/api_discovery_cache.json` 缓存）。**启动完成后**即调用 `ensure_instrument_api_registered` 并 `resource_tree.rebuild()`，左侧会包含扫描到的 API 模板；非写死列表。静态节点（开始/变量/注释等）仍来自 `nodes.py` 注册。
+
+#### 20.4 资源树交互
+- 左侧树控件支持**右键菜单**：展开全部 / 收缩全部（中英随界面语言）。
