@@ -41,6 +41,8 @@ class ResourceTreeWidget(QtWidgets.QWidget):
         self._view_mode_combo.currentIndexChanged.connect(self._on_view_mode_changed)
 
         self._tree = _TemplateTreeWidget()
+        self._tree.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
+        self._tree.customContextMenuRequested.connect(self._on_tree_context_menu)
 
         controls = QtWidgets.QWidget()
         controls_layout = QtWidgets.QHBoxLayout(controls)
@@ -133,3 +135,11 @@ class ResourceTreeWidget(QtWidgets.QWidget):
     def _on_view_mode_changed(self, _index: int) -> None:
         self._view_mode = str(self._view_mode_combo.currentData() or "grouped")
         self.rebuild()
+
+    def _on_tree_context_menu(self, position: QtCore.QPoint) -> None:
+        menu = QtWidgets.QMenu(self)
+        expand_text = "展开全部" if self._language == LANG_ZH else "Expand All"
+        collapse_text = "收缩全部" if self._language == LANG_ZH else "Collapse All"
+        menu.addAction(expand_text, self._tree.expandAll)
+        menu.addAction(collapse_text, self._tree.collapseAll)
+        menu.exec_(self._tree.viewport().mapToGlobal(position))

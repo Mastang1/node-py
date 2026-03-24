@@ -185,7 +185,7 @@ class WorkflowExporter:
         ]
 
         sections = import_lines + function_sections + helper_lines + footer
-        return "\n".join(line for line in sections if line != "")
+        return "\n".join(sections)
 
     def export_to_file(self, file_path: Path) -> Path:
         file_path = ensure_parent_directory(file_path)

@@ -289,6 +289,8 @@ class Demo02Window(QtWidgets.QMainWindow):
         self.retranslate_ui()
         self.apply_theme(THEME_DARK)
         self.build_sample_flow(prompt_if_dirty=False)
+        ensure_instrument_api_registered(self.graph)
+        self.resource_tree.rebuild()
 
     @property
     def current_flow_path(self) -> Path | None:
@@ -2149,11 +2151,16 @@ class Demo02Window(QtWidgets.QMainWindow):
         return code
 
     def preview_code(self) -> None:
-        try:
-            code = self.render_code_preview()
-        except Exception as exc:
-            self.log("export", f"源码预览失败: {exc}")
+        if not self.validate_flow():
+            self.log("export", "源码预览中止：流程校验未通过。")
             return
+        code = self.last_rendered_code
+        if not code:
+            try:
+                code = self.render_code_preview()
+            except Exception as exc:
+                self.log("export", f"源码预览失败: {exc}")
+                return
         self.preview_dialog.set_title(self.t("preview_dialog"))
         self.preview_dialog.set_close_text(self.t("close"))
         self.preview_dialog.set_code(code)

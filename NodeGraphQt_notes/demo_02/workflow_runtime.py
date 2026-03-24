@@ -23,6 +23,8 @@ class WorkflowRuntimeError(RuntimeError):
 
 @dataclass
 class FlowAnalysis:
+    """ordered_nodes: depth-first discovery order from Start (for session / binding checks)."""
+
     ordered_nodes: list[WorkflowNode]
     reachable_nodes: list[WorkflowNode]
     unreachable_nodes: list[WorkflowNode]
@@ -80,6 +82,7 @@ def analyze_flow_graph(graph: Any) -> FlowAnalysis:
         raise WorkflowAnalysisError("当前流程只允许存在一个 Start 节点。")
 
     reachable_ids: set[str] = set()
+    visit_order: list[WorkflowNode] = []
     stack = [start_nodes[0]]
     node_map = {node.id: node for node in nodes}
     while stack:
@@ -87,17 +90,18 @@ def analyze_flow_graph(graph: Any) -> FlowAnalysis:
         if current.id in reachable_ids:
             continue
         reachable_ids.add(current.id)
+        visit_order.append(current)
         for spec in reversed(current.flow_output_specs()):
             for target in reversed(sorted(current.flow_targets(spec.key), key=node_sort_key)):
                 if target.id in node_map:
                     stack.append(target)
 
-    reachable_nodes = [node for node in nodes if node.id in reachable_ids]
+    reachable_sorted = sorted((node_map[nid] for nid in reachable_ids), key=node_sort_key)
     unreachable_nodes = [node for node in nodes if node.id not in reachable_ids]
 
     return FlowAnalysis(
-        ordered_nodes=reachable_nodes,
-        reachable_nodes=sorted(reachable_nodes, key=node_sort_key),
+        ordered_nodes=visit_order,
+        reachable_nodes=reachable_sorted,
         unreachable_nodes=sorted(unreachable_nodes, key=node_sort_key),
         start_nodes=start_nodes,
     )
