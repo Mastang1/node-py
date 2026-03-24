@@ -564,10 +564,9 @@
 #### 20.2 导出源码拼接
 - `WorkflowExporter.render_code` 不再丢弃列表中的空字符串行，避免意外合并语句行（保持生成脚本结构与可读性）。
 
-#### 20.2.1 导出形态：仅函数体（测试集成）
-- 导出结果为单个 **`instrument_flow_body(context)`**（可改名嵌入），内含嵌套节点函数与调度循环；**不再**生成独立可执行脚本（无顶层 `sys.path`/`main`）。
-- 建议 import 以注释块 `__DEMO02_EXPORT_IMPORTS__` 标注，供复制到宿主模块。
-- 详细原理见仓库 **`development_doc.md`**。
+#### 20.2.1 导出形态：线性脚本 + `run_flow()`（测试集成）
+- 按 visit 顺序生成 **`delay(...)`、`comment(...)`** 等直观调用，包在 **`run_flow()`** 内；无 `NODE_DISPATCH` / 大段脚手架。
+- 详细说明与索引见 **`development_doc.md`**；单测见 **`demo_02/tests/test_linear_flow_export.py`**。
 
 #### 20.3 仪器 API 与左侧资源树
 - 动态仪器节点元数据来自 `discover_api_method_metas()` 扫描 `demo_02.Instruments_pythonic`（含 `generated/api_discovery_cache.json` 缓存）。**启动完成后**即调用 `ensure_instrument_api_registered` 并 `resource_tree.rebuild()`，左侧会包含扫描到的 API 模板；非写死列表。静态节点（开始/变量/注释等）仍来自 `nodes.py` 注册。

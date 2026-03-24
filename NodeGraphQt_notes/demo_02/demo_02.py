@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import os
-import re
 import subprocess
 import sys
 import time
@@ -26,34 +25,20 @@ from demo_02.common import DEFAULT_EXPORT_PATH, DEFAULT_FLOW_PATH
 from demo_02.node_registry import ensure_instrument_api_registered
 from demo_02.nodes import BooleanConstantNode, IntegerConstantNode
 from demo_02.workflow_runtime import WorkflowRuntime
-from demo_02.workflow_exporter import DEFAULT_FLOW_BODY_NAME
+from demo_02.workflow_exporter import DEFAULT_RUN_FLOW_NAME
 
 
-def _run_exported_flow_body_smoke(exported_path: Path) -> None:
-    """Load body-only export: exec suggested imports then the flow function; run once with empty context."""
+def _run_exported_linear_script_smoke(exported_path: Path) -> None:
+    """Exec linear export module (imports + run_flow) and invoke run_flow() once."""
     text = exported_path.read_text(encoding="utf-8")
-    m = re.search(
-        r"# __DEMO02_EXPORT_IMPORTS__(.*?)# __DEMO02_EXPORT_IMPORTS_END__",
-        text,
-        re.DOTALL,
-    )
+    if str(PACKAGE_PARENT) not in sys.path:
+        sys.path.insert(0, str(PACKAGE_PARENT))
     ns: dict[str, Any] = {"__builtins__": __builtins__}
-    if m:
-        for line in m.group(1).splitlines():
-            stripped = line.strip()
-            if not stripped.startswith("#"):
-                continue
-            stmt = stripped[1:].strip()
-            if stmt.startswith(("from ", "import ")):
-                exec(compile(stmt + "\n", str(exported_path) + ":imports", "exec"), ns, ns)
-    match = re.search(rf"(?m)^def {re.escape(DEFAULT_FLOW_BODY_NAME)}\s*\(", text)
-    if not match:
-        raise RuntimeError(f"Exported file missing def {DEFAULT_FLOW_BODY_NAME}(...) at line start")
-    exec(compile(text[match.start() :], str(exported_path), "exec"), ns, ns)
-    fn = ns.get(DEFAULT_FLOW_BODY_NAME)
+    exec(compile(text, str(exported_path), "exec"), ns, ns)
+    fn = ns.get(DEFAULT_RUN_FLOW_NAME)
     if fn is None or not callable(fn):
-        raise RuntimeError(f"Export smoke: {DEFAULT_FLOW_BODY_NAME} not callable")
-    fn({})
+        raise RuntimeError(f"Export smoke: missing callable {DEFAULT_RUN_FLOW_NAME}()")
+    fn()
 
 
 def create_qapplication() -> QtWidgets.QApplication:
@@ -166,7 +151,7 @@ def run_headless_smoke_test() -> int:
             raise RuntimeError("Smoke test failed: validation after reload did not pass.")
 
         try:
-            _run_exported_flow_body_smoke(exported_path)
+            _run_exported_linear_script_smoke(exported_path)
         except Exception as exc:
             raise RuntimeError(f"Smoke test failed: exported flow body did not execute: {exc}") from exc
 

@@ -57,43 +57,31 @@
 ### 3.3 运行时执行（简述）
 
 - GUI/子进程运行时：`DynamicApiMethodNode.execute` 内 `importlib.import_module(meta.module_name)`，取类实例，调用真实方法；控制类节点（分支/循环等）走 `_execute_control_node`。
-- 与导出语义一致时，依赖同一套 `emit_python` 生成可在脚本侧复现的逻辑（见下节）。
+- 调试线程里仍用 `emit_python` + `ExportContext` 生成逐节点片段；**文件导出**走另一套「线性脚本」逻辑（见下节）。
 
 ---
 
-## 4. NODE FLOW 导出为 Python 的原理（当前：仅函数体）
+## 4. NODE FLOW 导出为 Python 的原理（当前：线性调用 + `run_flow()`）
 
-### 4.1 设计意图（与测试集成对齐）
+### 4.1 设计意图
 
-- **NODE FLOW 表示的是「仪器 API 的调用与控制流」**，在集成测试中通常只需要**一段可嵌入的函数体**，由测试框架提供：
-  - 外层函数名 / 测试用例名；
-  - `context` 的初始化或夹具；
-  - 断言与报告。
-- 因此导出**不再**生成完整的「可双击运行」脚本（无 `if __name__ == "__main__"`、无强行改 `sys.path`、无独立 `run_flow` 进程入口），而是：
-  - **一个默认名为 `instrument_flow_body(context)` 的函数**，其内部包含：
-    - 端口读写辅助 `_read_input_value` / `_set_output_value`（嵌套函数）；
-    - 每个可达节点对应一个**嵌套**的 `def node_xxx(context):`，体来自各节点 `emit_python`；
-    - 从 Start 出发的调度循环（`while current_node_id` + `FLOW_LINKS` / `NODE_DISPATCH`）；
-    - `finally` 中会话清理；
-    - `return context.get('return_value', context.get('last_result'))`。
-  - 文件头部**注释**中的 `__DEMO02_EXPORT_IMPORTS__` … `__DEMO02_EXPORT_IMPORTS_END__` 块：列出建议的 `from demo_02.common import ...`、`from demo_02.Instruments_pythonic...` 等，供复制到宿主模块顶部。
+- 导出文本应**直接可读**：按图上 **Start 出发的 visit 顺序**，一行一类调用，例如 `delay(1.0)`、`comment("…")`、`set_variable(variables, …)`，仪器类则 `SimSignalGeneratorIvi()` / `sg.configure_waveform(...)` 等。
+- 顶层 **`return` 在模块中非法**，因此用**薄包装** `def run_flow():` 包住上述语句；你可把函数体剪贴到自己的测试函数里，或整文件 `exec` 后调用 `run_flow()`。
+- 局部状态：`variables`、`sessions`、`_last` 均在 `run_flow()` 内；与 GUI 的 `FlowContext` 概念对应，但**无** `NODE_DISPATCH` / `while` 多态调度表。
 
-### 4.2 图分析
+### 4.2 映射范围
 
-- `workflow_runtime.analyze_flow_graph` 计算可达节点、Start、遍历顺序等；校验器用 **从 Start 深度优先的发现顺序** 做会话绑定检查，避免「画布上下顺序」误判。
+- 已映射：注释、延时、`general` 的 `set_variable` / `return_value` / `raise_error`、常用常量与读写变量、简单数学/比较/布尔、静态仪器会话 open/use/close、多数动态 API 方法（控制流类节点导出为 `# TODO` 提示手写）。
+- 未映射或复杂数据依赖：导出为 `# TODO` 行，需手写或后续补规则。
 
-### 4.3 与「一整份不知来源的脚本」的区别
+### 4.3 图分析
 
-| 旧形态（已弃用） | 当前形态 |
-|------------------|----------|
-| 顶层 `BASE_DIR`、`sys.path.insert` | 无；由宿主工程配置 PYTHONPATH |
-| 顶层多行 import + `main()` | 仅注释建议 import；无 `main` |
-| 顶层 `run_flow` + 打印日志 | 逻辑全部收拢在 `instrument_flow_body` 内，无强制 print |
-| 用户难以嵌入 pytest / 产品代码 | 整函数可复制或 `import` 后调用 |
+- `analyze_flow_graph` 的 `ordered_nodes`（DFS visit 顺序）即导出顺序；校验仍用该顺序做会话绑定检查。
 
-### 4.4 冒烟测试如何验证导出
+### 4.4 测试与冒烟
 
-- `demo_02.py --headless-smoke-test` 中在导出后不再 `subprocess` 执行整文件，而是解析注释中的 import 片段并 `exec` 建议语句，再 `exec` 从 `def instrument_flow_body` 起的代码，最后对空 `context` 调用一次该函数（与原先「跑通示例流」的意图一致，且适配仅函数体格式）。
+- `demo_02/tests/test_linear_flow_export.py`：`pytest` 校验导出字符串形态并 `exec` + `run_flow()`。
+- `demo_02.py --headless-smoke-test`：导出示例流程后对整文件 `exec` 并调用 `run_flow()` 一次。
 
 ---
 
@@ -113,4 +101,4 @@
 
 ---
 
-*文档版本：与「导出仅为 `instrument_flow_body`」行为同步；后续若增加可切换导出模式，应在本节补充开关说明。*
+*文档版本：与「线性导出 + `run_flow()`」行为同步。*

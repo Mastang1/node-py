@@ -1,22 +1,49 @@
+"""
+Export NODE FLOW as a short linear Python script: one statement per node in graph visit order.
+
+Uses ``demo_02.Instruments_pythonic.general`` helpers (``delay``, ``comment``, …) and a single
+``run_flow()`` wrapper so ``return`` is valid. Rename ``run_flow`` when embedding in tests.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from .common import ensure_parent_directory, sanitize_identifier
-from .nodes import WorkflowNode
+from .api_dynamic_nodes import DynamicApiMethodNode
+from .common import as_bool, as_float, as_int, as_text, ensure_parent_directory, sanitize_identifier
+from .nodes import (
+    BooleanConstantNode,
+    BooleanLogicNode,
+    BooleanNotNode,
+    CloseSessionNode,
+    CommentNode,
+    CompareNumberNode,
+    CompareTextNode,
+    DelayNode,
+    FloatConstantNode,
+    IntegerConstantNode,
+    MathBinaryNode,
+    OpenInstrumentSessionNode,
+    PythonSnippetNode,
+    RaiseErrorNode,
+    ReadBoolVariableNode,
+    ReadIntVariableNode,
+    ReadTextVariableNode,
+    ReturnNode,
+    SessionMethodNode,
+    SetVariableNode,
+    StartNode,
+    TextConstantNode,
+    WorkflowNode,
+)
 from .workflow_runtime import analyze_flow_graph
-
-# Markers for tooling / smoke tests to extract suggested imports (lines are valid Python after stripping leading "# ").
-_EXPORT_IMPORTS_BEGIN = "# __DEMO02_EXPORT_IMPORTS__"
-_EXPORT_IMPORTS_END = "# __DEMO02_EXPORT_IMPORTS_END__"
-
-DEFAULT_FLOW_BODY_NAME = "instrument_flow_body"
 
 
 @dataclass
 class ExportContext:
+    """Used by execute_debug / emit_python on nodes (unchanged API)."""
+
     api_imports: dict[str, set[str]] = field(default_factory=dict)
     general_helper_required: bool = False
     _session_vars: dict[str, str] = field(default_factory=dict)
@@ -58,150 +85,286 @@ class ExportContext:
         return candidate
 
 
-def _suggested_import_lines(export_context: ExportContext) -> list[str]:
-    """Comment lines (with # prefix) listing suggested top-level imports for the host module."""
-    lines = [_EXPORT_IMPORTS_BEGIN]
-    lines.append("# from demo_02.common import as_bool, as_float, as_int, as_text")
-    if export_context.general_helper_required:
-        lines.append("# from demo_02.Instruments_pythonic import general as general_helpers")
-    for module_name in sorted(export_context.api_imports):
-        class_names = ", ".join(sorted(export_context.api_imports[module_name]))
-        if module_name.startswith("demo_02."):
-            mod = module_name
+class _ScriptContext:
+    """Tracks imports, session names, and API instance vars for linear script."""
+
+    def __init__(self) -> None:
+        self.api_imports: dict[str, set[str]] = {}
+        self.session_vars: dict[str, str] = {}
+        self.api_instance_vars: dict[str, str] = {}
+        self.general_names: set[str] = set()
+
+    def need_general(self, *names: str) -> None:
+        self.general_names.update(names)
+
+    def require_api(self, module: str | None, class_name: str | None) -> None:
+        if not module or not class_name:
+            return
+        self.api_imports.setdefault(module, set()).add(class_name)
+
+    def session_py_var(self, session_name: str) -> str:
+        if session_name in self.session_vars:
+            return self.session_vars[session_name]
+        base = "".join(c if c.isalnum() else "_" for c in session_name) or "session"
+        if base[0].isdigit():
+            base = "s_" + base
+        v = base
+        n = 2
+        all_names = set(self.session_vars.values())
+        while v in all_names:
+            v = f"{base}_{n}"
+            n += 1
+        self.session_vars[session_name] = v
+        return v
+
+    def api_instance_var(self, instance_key: str, class_name: str) -> tuple[str, bool]:
+        if instance_key in self.api_instance_vars:
+            return self.api_instance_vars[instance_key], False
+        base = "".join(c if c.isalnum() else "_" for c in class_name) or "api"
+        v = f"_api_{base}"
+        used = set(self.api_instance_vars.values()) | set(self.session_vars.values())
+        n = 2
+        while v in used:
+            v = f"_api_{base}_{n}"
+            n += 1
+        self.api_instance_vars[instance_key] = v
+        return v, True
+
+
+def _module_import_path(relative: str) -> str:
+    if relative.startswith("demo_02."):
+        return relative
+    return f"demo_02.{relative}"
+
+
+def _linear_lines_for_node(node: WorkflowNode, sctx: _ScriptContext) -> list[str]:
+    """Emit 0+ lines (no indent) for one node; empty => skip."""
+
+    if isinstance(node, StartNode):
+        return []  # user-visible script stays minimal; title is not a runtime call
+
+    if isinstance(node, CommentNode):
+        sctx.need_general("comment")
+        msg = as_text(node.field_value("message"))
+        return [f"comment({msg!r})", f"_last = {msg!r}"]
+
+    if isinstance(node, DelayNode):
+        sctx.need_general("delay")
+        sec = as_float(node.field_value("seconds"))
+        return [f"delay({sec!r})", f"_last = {sec!r}"]
+
+    if isinstance(node, SetVariableNode):
+        sctx.need_general("set_variable")
+        name = as_text(node.field_value("variable_name"))
+        kind = as_text(node.field_value("value_type"))
+        raw = node.get_property("value")
+        if kind == "int":
+            val = as_int(raw)
+        elif kind == "float":
+            val = as_float(raw)
+        elif kind == "bool":
+            val = as_bool(raw)
         else:
-            mod = f"demo_02.{module_name}"
-        lines.append(f"# from {mod} import {class_names}")
-    lines.append(_EXPORT_IMPORTS_END)
-    return lines
+            val = as_text(raw)
+        return [f"set_variable(variables, {name!r}, {val!r})", f"_last = variables[{name!r}]"]
+
+    if isinstance(node, ReturnNode):
+        sctx.need_general("return_value")
+        st = as_text(node.field_value("source_type"))
+        if st == "constant":
+            return [f"return return_value({node.field_value('value')!r})"]
+        if st == "variable":
+            vn = as_text(node.field_value("variable_name"))
+            return [f"return return_value(variables.get({vn!r}))"]
+        return ["return return_value(_last)"]
+
+    if isinstance(node, RaiseErrorNode):
+        sctx.need_general("raise_error")
+        return [f"raise_error({as_text(node.field_value('message'))!r})"]
+
+    if isinstance(node, BooleanConstantNode):
+        v = as_bool(node.get_property("value"))
+        return [f"_last = {v!r}"]
+
+    if isinstance(node, IntegerConstantNode):
+        v = as_int(node.get_property("value"))
+        return [f"_last = {v!r}"]
+
+    if isinstance(node, FloatConstantNode):
+        v = as_float(node.get_property("value"))
+        return [f"_last = {v!r}"]
+
+    if isinstance(node, TextConstantNode):
+        v = as_text(node.get_property("value"))
+        return [f"_last = {v!r}"]
+
+    if isinstance(node, ReadTextVariableNode):
+        vn = as_text(node.field_value("variable_name"))
+        dv = as_text(node.field_value("default_value"))
+        return [f"_last = variables.get({vn!r}, {dv!r})"]
+
+    if isinstance(node, ReadBoolVariableNode):
+        vn = as_text(node.field_value("variable_name"))
+        dv = as_bool(node.get_property("default_value"))
+        return [f"_last = variables.get({vn!r}, {dv!r})"]
+
+    if isinstance(node, ReadIntVariableNode):
+        vn = as_text(node.field_value("variable_name"))
+        dv = as_int(node.get_property("default_value"))
+        return [f"_last = variables.get({vn!r}, {dv!r})"]
+
+    if isinstance(node, MathBinaryNode):
+        op = as_text(node.field_value("operator"))
+        fl = as_float(node.get_property("left"))
+        fr = as_float(node.get_property("right"))
+        expr = {"add": f"{fl!r} + {fr!r}", "sub": f"{fl!r} - {fr!r}", "mul": f"{fl!r} * {fr!r}", "div": f"({fl!r} / {fr!r}) if {fr!r} != 0 else 0.0"}[
+            op
+        ]
+        return [f"_last = {expr}"]
+
+    if isinstance(node, CompareNumberNode):
+        op = as_text(node.field_value("operator"))
+        fl = as_float(node.get_property("left"))
+        fr = as_float(node.get_property("right"))
+        expr = {
+            "eq": f"{fl!r} == {fr!r}",
+            "ne": f"{fl!r} != {fr!r}",
+            "gt": f"{fl!r} > {fr!r}",
+            "ge": f"{fl!r} >= {fr!r}",
+            "lt": f"{fl!r} < {fr!r}",
+            "le": f"{fl!r} <= {fr!r}",
+        }[op]
+        return [f"_last = {expr}"]
+
+    if isinstance(node, CompareTextNode):
+        op = as_text(node.field_value("operator"))
+        tl = as_text(node.get_property("left"))
+        tr = as_text(node.get_property("right"))
+        expr = {
+            "eq": f"{tl!r} == {tr!r}",
+            "ne": f"{tl!r} != {tr!r}",
+            "contains": f"{tr!r} in {tl!r}",
+            "starts_with": f"{tl!r}.startswith({tr!r})",
+            "ends_with": f"{tl!r}.endswith({tr!r})",
+        }[op]
+        return [f"_last = {expr}"]
+
+    if isinstance(node, BooleanLogicNode):
+        op = as_text(node.field_value("operator"))
+        fl = as_bool(node.get_property("left"))
+        fr = as_bool(node.get_property("right"))
+        expr = {"and": f"{fl!r} and {fr!r}", "or": f"{fl!r} or {fr!r}", "xor": f"bool({fl!r}) ^ bool({fr!r})"}[op]
+        return [f"_last = {expr}"]
+
+    if isinstance(node, BooleanNotNode):
+        fv = as_bool(node.get_property("value"))
+        return [f"_last = (not {fv!r})"]
+
+    if isinstance(node, OpenInstrumentSessionNode):
+        mod = node.API_MODULE
+        cls = node.API_CLASS_NAME
+        sctx.require_api(mod, cls)
+        var = sctx.session_py_var(node.session_name_value())
+        sn = node.session_name_value()
+        return [
+            f"{var} = {cls}()",
+            (
+                f"{var}.initialize(resource_name={as_text(node.field_value('resource_name'))!r}, "
+                f"id_query={as_bool(node.field_value('id_query'))!r}, "
+                f"reset={as_bool(node.field_value('reset'))!r})"
+            ),
+            f"sessions[{sn!r}] = {var}",
+            f"_last = {var}",
+        ]
+
+    if isinstance(node, CloseSessionNode):
+        var = sctx.session_py_var(node.session_name_value())
+        return [f"{var}.close()", "_last = None"]
+
+    if isinstance(node, SessionMethodNode) and not isinstance(node, CloseSessionNode):
+        mod = node.API_MODULE
+        cls = node.API_CLASS_NAME
+        if mod and cls:
+            sctx.require_api(mod, cls)
+        var = sctx.session_py_var(node.session_name_value())
+        args = ", ".join(f"{f}={node.field_value(f)!r}" for f in node.METHOD_ARG_FIELDS)
+        call = f"{var}.{node.METHOD_NAME}({args})"
+        if node.RESULT_TO_VARIABLE:
+            save = as_text(node.field_value("save_as"))
+            return [f"variables[{save!r}] = {call}", f"_last = variables[{save!r}]"]
+        return [f"_last = {call}"]
+
+    if isinstance(node, DynamicApiMethodNode):
+        meta = node._api_meta()  # noqa: SLF001
+        if meta.is_control_node:
+            return [f"# TODO: control node {meta.method_name} — flatten if/while/for manually"]
+        sctx.require_api(meta.export_module_name, meta.class_name)
+        var, need_new = sctx.api_instance_var(meta.instance_key, meta.class_name)
+        kwargs = ", ".join(f"{p.name}={node.get_property(p.name)!r}" for p in meta.params)
+        call = f"{var}.{meta.method_name}({kwargs})"
+        if need_new:
+            return [f"{var} = {meta.class_name}()", f"_last = {call}"]
+        return [f"_last = {call}"]
+
+    if isinstance(node, PythonSnippetNode):
+        return [f"# TODO: Python 代码块节点 {node.name()} — 请手写或改用通用节点"]
+
+    return [f"# TODO: {node.name()} ({node.__class__.__name__}) — linear export not mapped"]
+
+
+DEFAULT_RUN_FLOW_NAME = "run_flow"
 
 
 class WorkflowExporter:
-    """Exports NODE FLOW as a single function body (embeddable in test cases / apps)."""
-
-    def __init__(self, graph: Any, *, flow_body_name: str = DEFAULT_FLOW_BODY_NAME) -> None:
+    def __init__(self, graph: Any, *, run_flow_name: str = DEFAULT_RUN_FLOW_NAME) -> None:
         self.graph = graph
-        self._flow_body_name = flow_body_name
+        self._run_flow_name = run_flow_name
 
     def render_code(self) -> str:
         analysis = analyze_flow_graph(self.graph)
-        export_context = ExportContext()
-        flow_links: dict[str, dict[str, str]] = {}
+        sctx = _ScriptContext()
 
-        node_blocks: list[tuple[str, str, str, list[str]]] = []
-        for node in analysis.reachable_nodes:
-            function_name = export_context.node_function_name(node)
-            flow_links[node.id] = {}
-            for spec in node.flow_output_specs():
-                target = node.next_flow_node(spec.key)
-                if target is not None:
-                    flow_links[node.id][spec.key] = target.id
-            emitted_lines = node.emit_python(export_context) or ["return None"]
-            node_blocks.append(
-                (function_name, node.name(), node.__class__.__name__, list(emitted_lines)),
-            )
+        body_lines: list[str] = []
+        for node in analysis.ordered_nodes:
+            for line in _linear_lines_for_node(node, sctx):
+                body_lines.append("    " + line)
 
-        header = [
-            "# Demo 02 — NODE FLOW 导出（仅函数体）",
-            "#",
-            "# 本文件只包含「仪器 API 调用与控制流调度」对应的 Python 函数体，便于您：",
-            "#   - 粘贴到测试用例中并自行命名外层函数 / 类方法；",
-            "#   - 在外层补充夹具、断言、报告等应用逻辑。",
-            "#",
-            "# 默认入口：单函数 "
-            + self._flow_body_name
-            + "(context)（实际定义在文件下方；本行注释勿含可被误匹配的 def 片段）。",
-            "# context：由宿主传入的可变 dict；本函数会 setdefault sessions / port_values / variables 等键。",
-            "#",
-            "# 请将「建议 import」复制到您的模块顶部（路径以工程 PYTHONPATH 为准）：",
+        import_lines: list[str] = [
+            '"""NODE FLOW → linear Python (visit order). Rename run_flow() in your tests."""',
+            "from __future__ import annotations",
+            "",
+            "from typing import Any",
+            "",
         ]
-        header.extend(_suggested_import_lines(export_context))
+        if sctx.general_names:
+            g = ", ".join(sorted(sctx.general_names))
+            import_lines.append(f"from demo_02.Instruments_pythonic.general import {g}")
+            import_lines.append("")
+        for mod in sorted(sctx.api_imports):
+            classes = ", ".join(sorted(sctx.api_imports[mod]))
+            import_lines.append(f"from {_module_import_path(mod)} import {classes}")
+        if sctx.api_imports:
+            import_lines.append("")
 
-        body_lines: list[str] = [
+        func = [
             "",
-            f"def {self._flow_body_name}(context):",
-            '    """Execute the node-graph flow (instrument API call sequence + branching). Mutates `context`."""',
-            "    def _read_input_value(context, source, fallback=None):",
-            "        if source is None:",
-            "            return fallback",
-            "        source_key = tuple(source)",
-            "        if source_key not in context['port_values']:",
-            "            raise RuntimeError(f'Upstream data not ready: {source_key[0]}:{source_key[1]}')",
-            "        return context['port_values'][source_key]",
+            f"def {self._run_flow_name}() -> Any:",
+            '    """Instrument API call sequence from the graph (minimal linear form)."""',
+            "    variables: dict[str, Any] = {}",
+            "    sessions: dict[str, Any] = {}",
+            "    _last: Any = None",
             "",
-            "    def _set_output_value(context, node_id, key, value):",
-            "        context['port_values'][(node_id, key)] = value",
-            "        return value",
+        ]
+        footer = [
+            "",
+            "",
+            f"# __DEMO02_EXPORT_IMPORTS__",
+            f"# (copy imports above into your module if you paste only the function body)",
+            f"# __DEMO02_EXPORT_IMPORTS_END__",
             "",
         ]
 
-        for function_name, node_name, class_name, emitted_lines in node_blocks:
-            body_lines.append(f"    def {function_name}(context):")
-            body_lines.append(f"        # {node_name} ({class_name})")
-            for line in emitted_lines:
-                body_lines.append(f"        {line}")
-            body_lines.append("")
-
-        unreachable_names = [node.name() for node in analysis.unreachable_nodes]
-        body_lines.extend(
-            [
-                f"    _FLOW_LINKS = {flow_links!r}",
-                f"    _UNREACHABLE_NODE_NAMES = {unreachable_names!r}",
-                "    _NODE_NAMES = {",
-            ]
-        )
-        for node in analysis.reachable_nodes:
-            body_lines.append(f"        {node.id!r}: {node.name()!r},")
-        body_lines.extend(
-            [
-                "    }",
-                "    _NODE_DISPATCH = {",
-            ]
-        )
-        for node in analysis.reachable_nodes:
-            fn = export_context.node_function_name(node)
-            body_lines.append(f"        {node.id!r}: {fn},")
-        body_lines.extend(
-            [
-                "    }",
-                f"    _START_NODE_ID = {analysis.start_nodes[0].id!r}",
-                "",
-                "    context.setdefault('sessions', {})",
-                "    context.setdefault('api_instances', {})",
-                "    context.setdefault('variables', {})",
-                "    context.setdefault('logs', [])",
-                "    context.setdefault('last_result', None)",
-                "    context.setdefault('return_value', None)",
-                "    context.setdefault('port_values', {})",
-                "    context.setdefault('loop_states', {})",
-                "    context.setdefault('terminated', False)",
-                "",
-                "    current_node_id = _START_NODE_ID",
-                "    step_count = 0",
-                "    try:",
-                "        while current_node_id:",
-                "            step_count += 1",
-                "            if step_count > 10000:",
-                "                raise RuntimeError('Flow exceeded 10000 execution steps.')",
-                "            next_flow_key = _NODE_DISPATCH[current_node_id](context)",
-                "            if context.get('terminated'):",
-                "                break",
-                "            current_node_id = _FLOW_LINKS.get(current_node_id, {}).get(next_flow_key)",
-            ]
-        )
-        body_lines.extend(
-            [
-                "    finally:",
-                "        for session_name, session in list(context['sessions'].items()):",
-                "            if getattr(session, 'initialized', False):",
-                "                session.close()",
-                "",
-                "    return context.get('return_value', context.get('last_result'))",
-                "",
-            ]
-        )
-
-        sections = header + [""] + body_lines
-        return "\n".join(sections)
+        return "\n".join(import_lines + func + body_lines + footer)
 
     def export_to_file(self, file_path: Path) -> Path:
         file_path = ensure_parent_directory(file_path)

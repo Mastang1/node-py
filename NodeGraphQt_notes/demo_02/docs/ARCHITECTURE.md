@@ -48,7 +48,7 @@
 | Platform | `platform/settings_store.py` |
 | Presentation | `app_window.py`（仍聚合运行/调试协调，后续可拆 `RunCoordinator`） |
 
-导出：`workflow_exporter` 仅生成可嵌入的 `instrument_flow_body(context)`，详见 `NodeGraphQt_notes/development_doc.md`。
+导出：`workflow_exporter` 生成 visit 顺序的线性调用并包在 `run_flow()` 中，详见 `NodeGraphQt_notes/development_doc.md`。
 
 ## 4. 扩展点（建议顺序）
 
