@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 HEADLESS_SMOKE_FLAG = "--headless-smoke-test"
 if HEADLESS_SMOKE_FLAG in sys.argv:
@@ -24,6 +26,34 @@ from demo_02.common import DEFAULT_EXPORT_PATH, DEFAULT_FLOW_PATH
 from demo_02.node_registry import ensure_instrument_api_registered
 from demo_02.nodes import BooleanConstantNode, IntegerConstantNode
 from demo_02.workflow_runtime import WorkflowRuntime
+from demo_02.workflow_exporter import DEFAULT_FLOW_BODY_NAME
+
+
+def _run_exported_flow_body_smoke(exported_path: Path) -> None:
+    """Load body-only export: exec suggested imports then the flow function; run once with empty context."""
+    text = exported_path.read_text(encoding="utf-8")
+    m = re.search(
+        r"# __DEMO02_EXPORT_IMPORTS__(.*?)# __DEMO02_EXPORT_IMPORTS_END__",
+        text,
+        re.DOTALL,
+    )
+    ns: dict[str, Any] = {"__builtins__": __builtins__}
+    if m:
+        for line in m.group(1).splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("#"):
+                continue
+            stmt = stripped[1:].strip()
+            if stmt.startswith(("from ", "import ")):
+                exec(compile(stmt + "\n", str(exported_path) + ":imports", "exec"), ns, ns)
+    match = re.search(rf"(?m)^def {re.escape(DEFAULT_FLOW_BODY_NAME)}\s*\(", text)
+    if not match:
+        raise RuntimeError(f"Exported file missing def {DEFAULT_FLOW_BODY_NAME}(...) at line start")
+    exec(compile(text[match.start() :], str(exported_path), "exec"), ns, ns)
+    fn = ns.get(DEFAULT_FLOW_BODY_NAME)
+    if fn is None or not callable(fn):
+        raise RuntimeError(f"Export smoke: {DEFAULT_FLOW_BODY_NAME} not callable")
+    fn({})
 
 
 def create_qapplication() -> QtWidgets.QApplication:
@@ -135,20 +165,10 @@ def run_headless_smoke_test() -> int:
         if not window.validate_flow():
             raise RuntimeError("Smoke test failed: validation after reload did not pass.")
 
-        # Capture output: verbose exported scripts flood stdout; when stdout is a pipe (e.g. IDE
-        # capture) the buffer can fill and block the child, stalling the smoke test and Qt event delivery.
-        proc = subprocess.run(
-            [sys.executable, str(exported_path)],
-            cwd=str(exported_path.parent),
-            check=False,
-            text=True,
-            capture_output=True,
-        )
-        if proc.returncode != 0:
-            raise RuntimeError(
-                f"Smoke test failed: exported script {exported_path} exited {proc.returncode}\n"
-                f"--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}"
-            )
+        try:
+            _run_exported_flow_body_smoke(exported_path)
+        except Exception as exc:
+            raise RuntimeError(f"Smoke test failed: exported flow body did not execute: {exc}") from exc
 
     def _verify_headless_subprocess_runner(flow_json: Path) -> None:
         notes_dir = Path(__file__).resolve().parent.parent

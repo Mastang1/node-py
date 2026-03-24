@@ -48,6 +48,8 @@
 | Platform | `platform/settings_store.py` |
 | Presentation | `app_window.py`（仍聚合运行/调试协调，后续可拆 `RunCoordinator`） |
 
+导出：`workflow_exporter` 仅生成可嵌入的 `instrument_flow_body(context)`，详见 `NodeGraphQt_notes/development_doc.md`。
+
 ## 4. 扩展点（建议顺序）
 
 1. **新节点**：`nodes.py` + `node_registry.py`；工厂仅负责 `register_all_nodes`，不硬编码节点类型表。
